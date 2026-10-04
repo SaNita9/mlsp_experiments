@@ -6,20 +6,23 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import torch.optim.lr_scheduler as lr_scheduler
 from dotenv import load_dotenv
-import lightning as L
-from lightning.pytorch.callbacks import ModelCheckpoint
+from typing import Tuple, Callable
+from torch.utils.data import DataLoader
+import math
+
 
 from dataset1 import get_dataloaders, get_resampled_dataloaders, get_datasets
-from utils1 import set_seed, make_deterministic
+from utils1 import make_deterministic
+from utils1 import get_parser, load_yaml_config, merge_config_into_args 
+from utils1 import see_distribution
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 SEED = 42
 
-class DDRModel(L.LightningModule):
-	def __init__(self, model_name="resnet18", pretrained=True, num_classes=6):
+class DDRModel(nn.Module):
+	def __init__(self, model_name: str = "resnet18", pretrained: bool = True, num_classes: int = 6):
 			super().__init__()
-			self.save_hyperparameters() 
 
 			self.model = create_model(
 				model_name, 
@@ -30,7 +33,12 @@ class DDRModel(L.LightningModule):
 	def forward(self, x):
 		return self.model(x)
 
-def train_epoch(model, loader, optimizer, criterion, scaler):
+def train_epoch(model: nn.Module, 
+				loader: DataLoader, 
+				optimizer: torch.optim.Optimizer, 
+				criterion: nn.Module, 
+				scaler: torch.amp.GradScaler) -> Tuple[float, float]:
+	
 	model.train()
 	total_loss, correct = 0, 0
 	for images, labels in loader:
@@ -48,7 +56,10 @@ def train_epoch(model, loader, optimizer, criterion, scaler):
 		correct += (outputs.argmax(1) == labels).sum().item()
 	return total_loss / len(loader), correct / len(loader.dataset)
 
-def validate(model, loader, criterion):
+def validate(model: nn.Module, 
+             loader: DataLoader, 
+			 criterion: nn.Module) -> Tuple[float, float]:
+	
 	model.eval()
 	total_loss, correct = 0, 0
 	with torch.no_grad():
@@ -60,35 +71,17 @@ def validate(model, loader, criterion):
 			correct += (outputs.argmax(1) == labels).sum().item()
 	return total_loss / len(loader), correct / len(loader.dataset)
 
-
-def execution_loop(train_batch, val_batch,
-				   root, img_size, mean, std,
-				   model, optimizer, epochs, training_fn, 
-				   lr_scheduler, dataloader_fn=get_dataloaders, 
-				   print_stats=True, **kwargs):
-
-	trainset = get_datasets(root, 'train', img_size, mean, std)
-	valset = get_datasets(root, 'valid', img_size, mean, std)
-	
-	trainloader = dataloader_fn(trainset, train_batch, shuffle = True, seed = SEED)
-	valloader = dataloader_fn(valset, val_batch, shuffle = False, seed = SEED)
-	criterion = nn.CrossEntropyLoss()
-	scaler = torch.amp.GradScaler('cuda')
-
-	checkpoint_callback = ModelCheckpoint(
-			dirpath="my_checkpoints/",
-			filename="best-model-{epoch:02d}-{val_loss:.2f}",
-			monitor="val_loss", 
-			mode="min",         
-			save_top_k=1,   
-			save_last=True,
-		)
-
-	trainer = L.Trainer(
-			max_epochs=3,
-			callbacks=[checkpoint_callback],
-			accelerator="auto",
-	)
+def execution_loop(checkpoint_path: str,
+					model: nn.Module,
+					trainloader: DataLoader,
+					valloader: DataLoader,
+					criterion: nn.Module,
+					optimizer: torch.optim.Optimizer,
+					scaler: torch.amp.GradScaler,
+					lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
+					epochs: int,
+					training_fn: Callable,
+					print_stats: bool = True):
 
 	if print_stats:
 		print(f"{'Epoch':>5}  {'Train Loss':>10}  {'Train Acc':>9}  {'Val Loss':>8}  {'Val Acc':>7}")
@@ -105,17 +98,26 @@ def execution_loop(train_batch, val_batch,
 		tr_batch_acc_values.append(tr_acc)
 
 		vl_loss, vl_acc = validate(model, valloader, criterion)
+
+		if epoch != 0 and vl_loss_values[-1] > vl_loss:
+			checkpoint = {
+			'epoch': epoch,
+			'model_state_dict': model.state_dict(),
+			'optimizer_state_dict': optimizer.state_dict(),
+			'loss': tr_loss
+			}
+			torch.save(checkpoint, checkpoint_path)
+			print(f"Overwritten checkpoint at epoch {epoch}")
+
 		vl_loss_values.append(vl_loss)
 		vl_batch_acc_values.append(vl_acc)
 
 		if print_stats:
 			print(f"{epoch+1:>5}  {tr_loss:>10.4f}  {tr_acc:>9.4f}  {vl_loss:>8.4f}  {vl_acc:>7.7f}")
+		
+		
 		lr_scheduler.step()
-
-	print(f"Best model saved at: {checkpoint_callback.best_model_path}")
-	best_model = DDRModel.load_from_checkpoint(
-			checkpoint_path=checkpoint_callback.best_model_path
-		)
+		
 
 	plt.plot(range(epochs), tr_loss_values, label = "train loss")
 	plt.plot(range(epochs), vl_loss_values, label = "val loss")
@@ -129,29 +131,41 @@ def execution_loop(train_batch, val_batch,
 	plt.title("Accuracy accross epochs")
 	plt.show()
 
-
 def main():
-	root = "/home/sara/distilaimedical/ddr/DDR-dataset/DR_grading"
-	img_size = 224
-	mean = (0.4140, 0.2575, 0.1289)
-	std = (0.2945, 0.2047, 0.1401)
-	num_epochs = 10
-	train_batch, val_batch = 64, 128
-	start_lr, end_lr = 1e-4, 1e-7
-	print_stats = True
-	dataloader_fn = get_resampled_dataloaders
-	model_name = "resnet18"
-	model = DDRModel(model_name, pretrained=True, num_classes=6)
+	parser = get_parser()
+	args = parser.parse_args()
+
+	if args.config is not None:
+		config_dict = load_yaml_config(args.config)
+		args = merge_config_into_args(args, config_dict, parser)
+
+	model = DDRModel(args.model_name, pretrained=True, num_classes=6)
 	model.to(device)
-	optim = torch.optim.Adam(model.parameters(), lr=start_lr)
-	scheduler = lr_scheduler.CosineAnnealingLR(optim, T_max=num_epochs, eta_min=end_lr)
-	execution_loop(train_batch, val_batch, 
-					root, img_size, mean, std, 
-					model, optim, num_epochs,
-					train_epoch, scheduler, 
-					dataloader_fn, print_stats=print_stats)
+
+	optim = torch.optim.Adam(model.parameters(), lr=args.start_lr)
+	scheduler = lr_scheduler.CosineAnnealingLR(optim, T_max=args.num_epochs, eta_min=args.end_lr)
+
+	trainset = get_datasets(args.root, 'train', args.img_size, args.mean, args.std)
+	valset = get_datasets(args.root, 'valid', args.img_size, args.mean, args.std)
+	
+	trainloader = get_resampled_dataloaders(trainset, args.train_batch, shuffle = True, seed = SEED)
+	valloader = get_dataloaders(valset, args.val_batch, shuffle = False, seed = SEED)
+
+	# see_distribution(trainloader)
+
+	criterion = nn.CrossEntropyLoss()
+	scaler = torch.amp.GradScaler('cuda')
+
+	execution_loop( args.checkpoint_path, model,
+					trainloader, valloader,
+					criterion, optim, scaler,
+					args.train_batch, args.val_batch,
+					scheduler, args.num_epochs,
+					train_epoch,
+					print_stats=args.print_stats)
 	
 if __name__ == "__main__":
-	set_seed(SEED)
+	make_deterministic(SEED)
+	os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 	load_dotenv()
 	main()

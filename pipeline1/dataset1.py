@@ -5,7 +5,7 @@ import numpy as np
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from PIL import Image
 import torchvision.transforms as transforms
-from utils1 import set_seed, seed_worker ,make_deterministic
+from utils1 import seed_worker
 
 class DDR_Dataset(Dataset):
 	def __init__(self, root, mode, transform=None, small=True):
@@ -89,23 +89,22 @@ def get_dataloaders(dataset, batch_size, shuffle=False , seed=42):
 	g = torch.Generator()
 	g.manual_seed(seed)
 	loader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, 
-						num_workers=4, worker_init_fn=seed_worker, 
+						num_workers=0, worker_init_fn=seed_worker, 
 						generator=g, pin_memory=True)
 	return loader
 
 def get_resampled_dataloaders(dataset, batch_size, shuffle=False , seed=42):
-	get_dataloaders(dataset, batch_size, shuffle, seed=seed)
-	# g = torch.Generator()
-	# g.manual_seed(seed)
 	
-	# labels_cpu = np.array([label for _, label in trainset.data])
-	# class_counts = np.bincount(labels_cpu, minlength=6)
-	# class_weights = 1/class_counts
-	# sample_weights = [class_weights[i] for i in labels_cpu]
+	g = torch.Generator()
+	g.manual_seed(seed)
 	
-	# sampler= WeightedRandomSampler(weights=sample_weights, num_samples=len(labels_cpu), replacement=True)
-
-	# trainloader = DataLoader(trainset, batch_size=64, sampler=sampler, num_workers=4, worker_init_fn=seed_worker, generator=g, pin_memory=True)
-	# valloader = DataLoader(valset, batch_size=128, shuffle=False, num_workers=4, pin_memory=True)
-	# testloader = DataLoader(testset, batch_size=128, shuffle=False, num_workers=4, pin_memory=True)
-	# return trainloader,valloader, testloader
+	labels_cpu = np.array([label for _, label in dataset.data])
+	class_counts = np.bincount(labels_cpu, minlength=6)
+	class_weights = 1/class_counts
+	sample_weights = [class_weights[i] for i in labels_cpu]
+	
+	sampler= WeightedRandomSampler(weights=sample_weights, num_samples=len(labels_cpu), replacement=True)
+	loader = DataLoader(dataset, batch_size=batch_size, sampler=sampler, 
+						num_workers=0, worker_init_fn=seed_worker, 
+						generator=g, pin_memory=True)
+	return loader
