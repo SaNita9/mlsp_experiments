@@ -90,6 +90,8 @@ def execution_loop(checkpoint_path: str,
 	vl_loss_values = []
 	tr_batch_acc_values = []
 	vl_batch_acc_values = []
+
+
 	
 	for epoch in range(epochs):
 		
@@ -99,7 +101,9 @@ def execution_loop(checkpoint_path: str,
 
 		vl_loss, vl_acc = validate(model, valloader, criterion)
 
-		if epoch != 0 and vl_loss_values[-1] > vl_loss:
+		best_val_loss = math.inf
+
+		if best_val_loss > vl_loss:
 			checkpoint = {
 			'epoch': epoch,
 			'model_state_dict': model.state_dict(),
@@ -107,7 +111,8 @@ def execution_loop(checkpoint_path: str,
 			'loss': tr_loss
 			}
 			torch.save(checkpoint, checkpoint_path)
-			print(f"Overwritten checkpoint at epoch {epoch}")
+			if print_stats:
+				print(f"Overwritten checkpoint at epoch {epoch}")
 
 		vl_loss_values.append(vl_loss)
 		vl_batch_acc_values.append(vl_acc)
@@ -156,13 +161,13 @@ def main():
 	criterion = nn.CrossEntropyLoss()
 	scaler = torch.amp.GradScaler('cuda')
 
-	execution_loop( args.checkpoint_path, model,
-					trainloader, valloader,
-					criterion, optim, scaler,
-					args.train_batch, args.val_batch,
-					scheduler, args.num_epochs,
-					train_epoch,
-					print_stats=args.print_stats)
+	execution_loop(args.checkpoint_path, model,
+	               trainloader, valloader,
+				   criterion, optim, scaler,
+				   args.train_batch, args.val_batch,
+				   scheduler, args.num_epochs,
+				   train_epoch,
+				   print_stats=args.print_stats)
 	
 if __name__ == "__main__":
 	make_deterministic(SEED)
