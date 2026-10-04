@@ -93,7 +93,7 @@ def execution_loop(checkpoint_path: str,
 	
 	for epoch in range(epochs):
 		
-		tr_loss, tr_acc = training_fn(model, trainloader, optimizer, criterion, scaler, **kwargs)
+		tr_loss, tr_acc = training_fn(model, trainloader, optimizer, criterion, scaler)
 		tr_loss_values.append(tr_loss)
 		tr_batch_acc_values.append(tr_acc)
 
