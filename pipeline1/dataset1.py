@@ -6,6 +6,8 @@ from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from PIL import Image
 import torchvision.transforms as transforms
 from utils1 import seed_worker
+import torchvision.io as io
+from torchvision.transforms import v2
 
 class DDR_Dataset(Dataset):
 	def __init__(self, root, mode, transform=None, small=True):
@@ -34,7 +36,10 @@ class DDR_Dataset(Dataset):
 		t0 = time.time()
 		img_name, label = self.data[index]
 		img_path = os.path.join(self.img_dir, img_name)
-		img = Image.open(img_path).convert("RGB")
+
+		img = io.read_image(img_path)
+		# img = img.to(torch.float32) / 255.0
+		# img = Image.open(img_path).convert("RGB")
 		t1 = time.time()
 
 		if self.transform:
@@ -47,10 +52,10 @@ class DDR_Dataset(Dataset):
 def get_datasets(root, stage, img_size, mean, std):
 
 	transform_dict = {
-	'train': transforms.Compose([
+	'train': v2.Compose([
 			#CropBackground(threshold=5),
-			transforms.Resize((img_size, img_size)),
-			transforms.RandomAffine(
+			v2.Resize((img_size, img_size)),
+			v2.RandomAffine(
 				# translation,
 				translate=(0.1, 0.1),
 				# stretching,
@@ -61,19 +66,21 @@ def get_datasets(root, stage, img_size, mean, std):
 				fill=0
 			),
 			# flipping, 
-			transforms.RandomHorizontalFlip(),
+			v2.RandomHorizontalFlip(),
 			# and colour augmentation
-			transforms.ColorJitter(brightness=0.5, contrast=1, saturation=0.1, hue=0.25),
+			v2.ColorJitter(brightness=0.5, contrast=1, saturation=0.1, hue=0.25),
 	
-			transforms.ToTensor(),
-			transforms.Normalize(mean, std)
+			# transforms.ToTensor(),
+			v2.ToDtype(torch.float32, scale=True),
+			v2.Normalize(mean, std)
 		]),
 	
 		'eval' : transforms.Compose([
 			#CropBackground(threshold=5),
-			transforms.Resize((img_size, img_size)),
-			transforms.ToTensor(),
-			transforms.Normalize(mean, std)
+			v2.Resize((img_size, img_size)),
+			# transforms.ToTensor(),
+			v2.ToDtype(torch.float32, scale=True),
+			v2.Normalize(mean, std)
 		])
 	}
 
@@ -89,7 +96,7 @@ def get_dataloaders(dataset, batch_size, shuffle=False , seed=42):
 	g = torch.Generator()
 	g.manual_seed(seed)
 	loader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, 
-						num_workers=0, worker_init_fn=seed_worker, 
+						num_workers=4, worker_init_fn=seed_worker, 
 						generator=g, pin_memory=True)
 	return loader
 
@@ -105,6 +112,6 @@ def get_resampled_dataloaders(dataset, batch_size, shuffle=False , seed=42):
 	
 	sampler= WeightedRandomSampler(weights=sample_weights, num_samples=len(labels_cpu), replacement=True)
 	loader = DataLoader(dataset, batch_size=batch_size, sampler=sampler, 
-						num_workers=0, worker_init_fn=seed_worker, 
+						num_workers=4, worker_init_fn=seed_worker, 
 						generator=g, pin_memory=True)
 	return loader

@@ -11,6 +11,8 @@ from typing import Any, Dict
 def get_parser():
 	parser = argparse.ArgumentParser(description="trial")
 	parser.add_argument("--config", type=str, default=None)
+	parser.add_argument("--patience", type=int, default=6)
+	parser.add_argument("--delta", type=float, default=0.01)
 	parser.add_argument("--img_size", type=int, default=224)
 	parser.add_argument("--mean", type=float, nargs='+', default=[0.4140, 0.2575, 0.1289])
 	parser.add_argument("--std", type=float, nargs='+', default=[0.2945, 0.2047, 0.1401])

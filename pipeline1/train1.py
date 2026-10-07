@@ -33,6 +33,30 @@ class DDRModel(nn.Module):
 	def forward(self, x):
 		return self.model(x)
 
+
+class EarlyStopping:
+	def __init__(self, patience=5, delta=0):
+		self.patience = patience
+		self.delta = delta
+		self.best_score = None
+		self.early_stop = False
+		self.counter = 0
+
+	def __call__(self, val_loss):
+		score = -val_loss
+
+		if self.best_score is None:
+			self.best_score = score
+		elif score < self.best_score + self.delta:
+			self.counter += 1
+			if self.counter >= self.patience:
+				self.early_stop = True
+		else:
+			self.best_score = score
+			self.counter = 0
+
+import time
+
 def train_epoch(model: nn.Module, 
 				loader: DataLoader, 
 				optimizer: torch.optim.Optimizer, 
@@ -41,9 +65,22 @@ def train_epoch(model: nn.Module,
 	
 	model.train()
 	total_loss, correct = 0, 0
+
+	data_time, gpu_transfer_time, compute_time = 0.0, 0.0, 0.0
+	start_time = time.time()
+
 	for images, labels in loader:
+
+		data_time += time.time() - start_time
+		t0 = time.time()
+
 		images = images.to(device, non_blocking=True)
 		labels = labels.to(device, non_blocking=True)
+
+		torch.cuda.synchronize() # WAIT for GPU to finish receiving
+		gpu_transfer_time += time.time() - t0
+
+		t1 = time.time()
 		optimizer.zero_grad()
 		with torch.amp.autocast('cuda'):
 			outputs = model(images)
@@ -52,12 +89,27 @@ def train_epoch(model: nn.Module,
 		scaler.scale(loss).backward()
 		scaler.step(optimizer)
 		scaler.update()
+
 		total_loss += loss.item()
 		correct += (outputs.argmax(1) == labels).sum().item()
+
+		torch.cuda.synchronize() # WAIT for GPU to finish calculating
+		compute_time += time.time() - t1
+		
+		# Reset the timer for the NEXT data fetch
+		start_time = time.time()
+
+	# Print the results for this epoch
+	total_time = data_time + gpu_transfer_time + compute_time
+	print(f"\n\t[Epoch Profiler]")
+	print(f"\tData Load time:  {data_time:.2f}s ({(data_time/total_time)*100:.1f}%)")
+	print(f"\tGPU Transfer:    {gpu_transfer_time:.2f}s ({(gpu_transfer_time/total_time)*100:.1f}%)")
+	print(f"\tCompute time:    {compute_time:.2f}s ({(compute_time/total_time)*100:.1f}%)")
+	print(f"\tTotal time:      {total_time:.2f}s")	
 	return total_loss / len(loader), correct / len(loader.dataset)
 
 def validate(model: nn.Module, 
-             loader: DataLoader, 
+			 loader: DataLoader, 
 			 criterion: nn.Module) -> Tuple[float, float]:
 	
 	model.eval()
@@ -71,6 +123,7 @@ def validate(model: nn.Module,
 			correct += (outputs.argmax(1) == labels).sum().item()
 	return total_loss / len(loader), correct / len(loader.dataset)
 
+
 def execution_loop(checkpoint_path: str,
 					model: nn.Module,
 					trainloader: DataLoader,
@@ -81,6 +134,7 @@ def execution_loop(checkpoint_path: str,
 					lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
 					epochs: int,
 					training_fn: Callable,
+					early_stopping: Callable,
 					print_stats: bool = True):
 
 	if print_stats:
@@ -91,18 +145,21 @@ def execution_loop(checkpoint_path: str,
 	tr_batch_acc_values = []
 	vl_batch_acc_values = []
 
-
+	best_val_loss = math.inf
 	
 	for epoch in range(epochs):
-		
+		print("\tbegin training")
 		tr_loss, tr_acc = training_fn(model, trainloader, optimizer, criterion, scaler)
 		tr_loss_values.append(tr_loss)
 		tr_batch_acc_values.append(tr_acc)
-
+		print("\tbegin validating")
 		vl_loss, vl_acc = validate(model, valloader, criterion)
+		vl_loss_values.append(vl_loss)
+		vl_batch_acc_values.append(vl_acc)
 
-		best_val_loss = math.inf
-
+		if print_stats:
+					print(f"{epoch+1:>5}  {tr_loss:>10.4f}  {tr_acc:>9.4f}  {vl_loss:>8.4f}  {vl_acc:>7.7f}")
+				
 		if best_val_loss > vl_loss:
 			checkpoint = {
 			'epoch': epoch,
@@ -110,28 +167,26 @@ def execution_loop(checkpoint_path: str,
 			'optimizer_state_dict': optimizer.state_dict(),
 			'loss': tr_loss
 			}
+			
 			torch.save(checkpoint, checkpoint_path)
-			if print_stats:
-				print(f"Overwritten checkpoint at epoch {epoch}")
 
-		vl_loss_values.append(vl_loss)
-		vl_batch_acc_values.append(vl_acc)
-
-		if print_stats:
-			print(f"{epoch+1:>5}  {tr_loss:>10.4f}  {tr_acc:>9.4f}  {vl_loss:>8.4f}  {vl_acc:>7.7f}")
-		
-		
 		lr_scheduler.step()
-		
 
-	plt.plot(range(epochs), tr_loss_values, label = "train loss")
-	plt.plot(range(epochs), vl_loss_values, label = "val loss")
+		early_stopping(vl_loss)
+		if early_stopping.early_stop:
+			print(f"Early stopping at epoch {epoch + 1}")
+			break
+
+	completed_epochs = range(len(tr_loss_values))
+
+	plt.plot(completed_epochs, tr_loss_values, label = "train loss")
+	plt.plot(completed_epochs, vl_loss_values, label = "val loss")
 	plt.legend()
 	plt.title("Loss accross epochs")
 	plt.show()
 
-	plt.plot(range(epochs), tr_batch_acc_values, label = "train acc")
-	plt.plot(range(epochs), vl_batch_acc_values, label = "val acc")
+	plt.plot(completed_epochs, tr_batch_acc_values, label = "train acc")
+	plt.plot(completed_epochs, vl_batch_acc_values, label = "val acc")
 	plt.legend()
 	plt.title("Accuracy accross epochs")
 	plt.show()
@@ -150,6 +205,8 @@ def main():
 	optim = torch.optim.Adam(model.parameters(), lr=args.start_lr)
 	scheduler = lr_scheduler.CosineAnnealingLR(optim, T_max=args.num_epochs, eta_min=args.end_lr)
 
+	early_stopping = EarlyStopping(patience=args.patience, delta=args.delta)
+
 	trainset = get_datasets(args.root, 'train', args.img_size, args.mean, args.std)
 	valset = get_datasets(args.root, 'valid', args.img_size, args.mean, args.std)
 	
@@ -162,11 +219,11 @@ def main():
 	scaler = torch.amp.GradScaler('cuda')
 
 	execution_loop(args.checkpoint_path, model,
-	               trainloader, valloader,
+				   trainloader, valloader,
 				   criterion, optim, scaler,
-				   args.train_batch, args.val_batch,
 				   scheduler, args.num_epochs,
 				   train_epoch,
+				   early_stopping,
 				   print_stats=args.print_stats)
 	
 if __name__ == "__main__":

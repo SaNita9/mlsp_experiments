@@ -7,6 +7,8 @@ test_batch: 128
 val_batch: 128
 start_lr: 1.0e-4
 end_lr: 1.0e-7
+patience: 5
+delta: 0.001
 print_stats: true
 model_name: "resnet18"
 root : "/home/sara/distilaimedical/ddr/DDR-dataset/DR_grading"
