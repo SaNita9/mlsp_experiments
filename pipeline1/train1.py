@@ -66,21 +66,21 @@ def train_epoch(model: nn.Module,
 	model.train()
 	total_loss, correct = 0, 0
 
-	data_time, gpu_transfer_time, compute_time = 0.0, 0.0, 0.0
-	start_time = time.time()
+	# data_time, gpu_transfer_time, compute_time = 0.0, 0.0, 0.0
+	# start_time = time.time()
 
 	for images, labels in loader:
 
-		data_time += time.time() - start_time
-		t0 = time.time()
+		# data_time += time.time() - start_time
+		# t0 = time.time()
 
 		images = images.to(device, non_blocking=True)
 		labels = labels.to(device, non_blocking=True)
 
 		torch.cuda.synchronize() # WAIT for GPU to finish receiving
-		gpu_transfer_time += time.time() - t0
+		# gpu_transfer_time += time.time() - t0
 
-		t1 = time.time()
+		# t1 = time.time()
 		optimizer.zero_grad()
 		with torch.amp.autocast('cuda'):
 			outputs = model(images)
@@ -94,18 +94,18 @@ def train_epoch(model: nn.Module,
 		correct += (outputs.argmax(1) == labels).sum().item()
 
 		torch.cuda.synchronize() # WAIT for GPU to finish calculating
-		compute_time += time.time() - t1
+		# compute_time += time.time() - t1
 		
 		# Reset the timer for the NEXT data fetch
-		start_time = time.time()
+		# start_time = time.time()
 
 	# Print the results for this epoch
-	total_time = data_time + gpu_transfer_time + compute_time
-	print(f"\n\t[Epoch Profiler]")
-	print(f"\tData Load time:  {data_time:.2f}s ({(data_time/total_time)*100:.1f}%)")
-	print(f"\tGPU Transfer:    {gpu_transfer_time:.2f}s ({(gpu_transfer_time/total_time)*100:.1f}%)")
-	print(f"\tCompute time:    {compute_time:.2f}s ({(compute_time/total_time)*100:.1f}%)")
-	print(f"\tTotal time:      {total_time:.2f}s")	
+	# total_time = data_time + gpu_transfer_time + compute_time
+	# print(f"\n\t[Epoch Profiler]")
+	# print(f"\tData Load time:  {data_time:.2f}s ({(data_time/total_time)*100:.1f}%)")
+	# print(f"\tGPU Transfer:    {gpu_transfer_time:.2f}s ({(gpu_transfer_time/total_time)*100:.1f}%)")
+	# print(f"\tCompute time:    {compute_time:.2f}s ({(compute_time/total_time)*100:.1f}%)")
+	# print(f"\tTotal time:      {total_time:.2f}s")	
 	return total_loss / len(loader), correct / len(loader.dataset)
 
 def validate(model: nn.Module, 
@@ -148,11 +148,11 @@ def execution_loop(checkpoint_path: str,
 	best_val_loss = math.inf
 	
 	for epoch in range(epochs):
-		print("\tbegin training")
+		# print("\tbegin training")
 		tr_loss, tr_acc = training_fn(model, trainloader, optimizer, criterion, scaler)
 		tr_loss_values.append(tr_loss)
 		tr_batch_acc_values.append(tr_acc)
-		print("\tbegin validating")
+		# print("\tbegin validating")
 		vl_loss, vl_acc = validate(model, valloader, criterion)
 		vl_loss_values.append(vl_loss)
 		vl_batch_acc_values.append(vl_acc)
