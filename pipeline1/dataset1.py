@@ -8,6 +8,7 @@ import torchvision.transforms as transforms
 from utils1 import seed_worker
 import torchvision.io as io
 from torchvision.transforms import v2
+import cv2
 
 class DDR_Dataset(Dataset):
 	def __init__(self, root, mode, transform=None, small=True):
@@ -38,23 +39,43 @@ class DDR_Dataset(Dataset):
 		img_path = os.path.join(self.img_dir, img_name)
 
 		img = io.read_image(img_path)
-		# img = img.to(torch.float32) / 255.0
-		# img = Image.open(img_path).convert("RGB")
-		t1 = time.time()
 
 		if self.transform:
 			img = self.transform(img)
-		t2 = time.time()
+
 		
 		return img, label
+class ApplyCLAHE:
+	def __init__(self, clip_limit=2.0, tile_grid_size=(8, 8)):
+		self.clip_limit = clip_limit
+		self.tile_grid_size = tile_grid_size
 
+	def __call__(self, img_tensor: torch.Tensor) -> torch.Tensor:
+		if img_tensor.dtype != torch.uint8:
+			raise TypeError(f"ApplyCLAHE expects torch.uint8, but got {img_tensor.dtype}. "
+							"Ensure ToDtype(torch.float32) happens after this transform.")
 
-def get_datasets(root, stage, img_size, mean, std):
+		#PyTorch uses CHW (Channels, Height, Width), while OpenCV expects HWC (Height, Width, Channels)
+		img_np = img_tensor.permute(1, 2, 0).numpy()
+		lab_img = cv2.cvtColor(img_np, cv2.COLOR_RGB2LAB)
+	
+		L,A,B=cv2.split(lab_img)
+		clahe = cv2.createCLAHE(clipLimit=self.clip_limit, tileGridSize=self.tile_grid_size)
+		clahe_L = np.clip(clahe.apply(L))
+	
+		clahe_lab = cv2.merge((clahe_L, A, B))
+		clahe_rgb = cv2.cvtColor(clahe_lab, cv2.COLOR_LAB2RGB)
+		out_tensor = torch.from_numpy(clahe_rgb).permute(2, 0, 1)
+		return out_tensor
+
+def get_datasets(root, stage, img_size, mean, std, clip_limit, tile_grid_size):
 
 	transform_dict = {
 	'train': v2.Compose([
 			#CropBackground(threshold=5),
+			ApplyCLAHE(clip_limit=clip_limit, tile_grid_size=tile_grid_size),
 			v2.Resize((img_size, img_size)),
+			#rotation? -15 to 15
 			v2.RandomAffine(
 				# translation,
 				translate=(0.1, 0.1),
@@ -77,6 +98,7 @@ def get_datasets(root, stage, img_size, mean, std):
 	
 		'eval' : transforms.Compose([
 			#CropBackground(threshold=5),
+			ApplyCLAHE(clip_limit=clip_limit, tile_grid_size=tile_grid_size),
 			v2.Resize((img_size, img_size)),
 			# transforms.ToTensor(),
 			v2.ToDtype(torch.float32, scale=True),

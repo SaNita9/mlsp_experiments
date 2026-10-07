@@ -66,8 +66,8 @@ def train_epoch(model: nn.Module,
 	model.train()
 	total_loss, correct = 0, 0
 
-	# data_time, gpu_transfer_time, compute_time = 0.0, 0.0, 0.0
-	# start_time = time.time()
+	data_time, gpu_transfer_time, compute_time = 0.0, 0.0, 0.0
+	start_time = time.time()
 
 	for images, labels in loader:
 
@@ -161,6 +161,7 @@ def execution_loop(checkpoint_path: str,
 					print(f"{epoch+1:>5}  {tr_loss:>10.4f}  {tr_acc:>9.4f}  {vl_loss:>8.4f}  {vl_acc:>7.7f}")
 				
 		if best_val_loss > vl_loss:
+			best_val_loss = vl_loss
 			checkpoint = {
 			'epoch': epoch,
 			'model_state_dict': model.state_dict(),
@@ -202,13 +203,21 @@ def main():
 	model = DDRModel(args.model_name, pretrained=True, num_classes=6)
 	model.to(device)
 
-	optim = torch.optim.Adam(model.parameters(), lr=args.start_lr)
+	# optim = torch.optim.Adam(model.parameters(), lr=args.start_lr)
+	optim = torch.optim.AdamW(
+		model.parameters(),
+		lr=1e-4,
+		betas=(0.9, 0.999),
+		weight_decay=1e-4,
+		eps=1e-6
+	)
+	criterion = nn.CrossEntropyLoss()
 	scheduler = lr_scheduler.CosineAnnealingLR(optim, T_max=args.num_epochs, eta_min=args.end_lr)
 
 	early_stopping = EarlyStopping(patience=args.patience, delta=args.delta)
 
-	trainset = get_datasets(args.root, 'train', args.img_size, args.mean, args.std)
-	valset = get_datasets(args.root, 'valid', args.img_size, args.mean, args.std)
+	trainset = get_datasets(args.root, 'train', args.img_size, args.mean, args.std, args.clip_limit, args.tile_grid_size)
+	valset = get_datasets(args.root, 'valid', args.img_size, args.mean, args.std,  args.clip_limit, args.tile_grid_size)
 	
 	trainloader = get_resampled_dataloaders(trainset, args.train_batch, shuffle = True, seed = SEED)
 	valloader = get_dataloaders(valset, args.val_batch, shuffle = False, seed = SEED)

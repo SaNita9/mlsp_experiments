@@ -64,7 +64,7 @@ def evaluate(model, loader, criterion, confusion_matrix_show=False):
 			plt.show()
 		return total_loss / len(loader), correct / len(loader.dataset), per_class_acc, kappa
 
-def run_test(test_batch, root, img_size, mean, std, model_name, dataloader_fn):
+def run_test(test_batch, root, img_size, mean, std, clip_limit, tile_grid_size, model_name, dataloader_fn):
 
 	make_deterministic(SEED)
 	
@@ -80,7 +80,7 @@ def run_test(test_batch, root, img_size, mean, std, model_name, dataloader_fn):
 	checkpoint = torch.load(checkpoint_path, weights_only=True)
 	model.load_state_dict(checkpoint['model_state_dict'])
 
-	testset = get_datasets(root, 'test', img_size, mean, std)
+	testset = get_datasets(root, 'test', img_size, mean, std, clip_limit, tile_grid_size)
 	testloader = dataloader_fn(testset, test_batch, shuffle = True, seed = SEED)
 
 	test_loss, overall_test_accuracy, test_acc_sep, kappa = evaluate(model, testloader, criterion, confusion_matrix_show=True)
@@ -98,7 +98,7 @@ def main():
 		config_dict = load_yaml_config(args.config)
 		args = merge_config_into_args(args, config_dict, parser)
 
-	run_test(args.test_batch, args.root, args.img_size, args.mean, args.std, 'resnet18', get_resampled_dataloaders)
+	run_test(args.test_batch, args.root, args.img_size, args.mean, args.std, args.clip_limit, args.tile_grid_size, 'resnet18', get_resampled_dataloaders)
 	
 if __name__ == "__main__":
 	load_dotenv()

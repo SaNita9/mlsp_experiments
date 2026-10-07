@@ -26,6 +26,8 @@ def get_parser():
 	parser.add_argument("--model_name", type=str, default="resnet18")
 	parser.add_argument("--root", type=str, default=None)
 	parser.add_argument("--checkpoint_path", type=str, default=None)	
+	parser.add_argument("--clip_limit", type=float, default=2.0)
+	parser.add_argument("--tile_grid_size", type=int,  nargs='+', default=[8,8])
 	return parser
 
 def load_yaml_config(path: str | Path) -> Dict[str, Any]:

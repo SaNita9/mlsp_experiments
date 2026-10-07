@@ -11,5 +11,7 @@ patience: 5
 delta: 0.001
 print_stats: true
 model_name: "resnet18"
+tile_grid_size: [8, 8]
+clip_limit: 2
 root : "/home/sara/distilaimedical/ddr/DDR-dataset/DR_grading"
 checkpoint_path : "/home/sara/distilaimedical/pipeline1/checkpoint.pth"
