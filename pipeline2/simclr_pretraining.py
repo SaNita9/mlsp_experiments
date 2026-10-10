@@ -1,0 +1,171 @@
+
+import lightning as L
+import torch
+import os
+import torch.nn.functional as F
+from dotenv import load_dotenv
+import torch.nn as nn
+import torch.optim as optim
+from torchvision.transforms import v2
+from torch.utils.data import Dataset, DataLoader
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+
+from arg_utils import get_parser, load_yaml_config, merge_config_into_args
+from DDR_utils import DDR_Dataset, DDRModel
+SEED = 42
+NUM_WORKERS = 4
+
+class ContrastiveTransformations(object):
+	
+	def __init__(self, base_transforms, n_views=2):
+		self.base_transforms = base_transforms
+		self.n_views = n_views
+		
+	def __call__(self, x):
+		return [self.base_transforms(x) for i in range(self.n_views)]
+
+
+def get_simclr_loaders(img_size, mean, std, img_root_dir, train_batch, val_batch):
+	contrast_transforms = v2.Compose([v2.Resize((img_size, img_size)),
+									v2.RandomHorizontalFlip(),
+									v2.RandomResizedCrop(size=img_size),
+									# v2.Resize((img_size, img_size)),
+									v2.RandomApply([
+										v2.ColorJitter(brightness=0.5, 
+														contrast=0.5, 
+														saturation=0.5, 
+														hue=0.1)
+									], p=0.8),
+									v2.RandomGrayscale(p=0.2),
+									v2.GaussianBlur(kernel_size=9),
+									v2.ToDtype(torch.float32, scale=True),
+									v2.Normalize(mean, std)
+									])
+
+	unlabeled_data = DDR_Dataset(img_root_dir, 'train', ContrastiveTransformations(contrast_transforms, n_views=2), labeled=False)
+	train_data_contrast = DDR_Dataset(img_root_dir, 'train', ContrastiveTransformations(contrast_transforms, n_views=2), labeled=True)
+	train_loader = DataLoader(unlabeled_data, batch_size=train_batch, shuffle=True, 
+									drop_last=True, pin_memory=True, num_workers=NUM_WORKERS)
+	val_loader = DataLoader(train_data_contrast, batch_size=val_batch, shuffle=False, 
+								 drop_last=False, pin_memory=True, num_workers=NUM_WORKERS)
+
+	return train_loader, val_loader
+
+
+
+class SimCLR(L.LightningModule):
+	
+	def __init__(self, model_name, pretrained, num_classes, hidden_dim, start_lr, end_lr, temperature, weight_decay, max_epochs=50):
+		super().__init__()
+		self.save_hyperparameters()
+		
+		self.convnet = DDRModel(model_name, pretrained=pretrained, num_classes=0)
+	   
+		backbone_out_features = self.convnet.num_features
+		
+		self.projection_head = nn.Sequential(
+			nn.Linear(backbone_out_features, backbone_out_features), 
+			nn.ReLU(inplace=True),
+			nn.Linear(backbone_out_features, hidden_dim)
+		)
+
+	def configure_optimizers(self):
+		optimizer = optim.AdamW(self.parameters(), 
+								lr=self.hparams.start_lr, 
+								weight_decay=self.hparams.weight_decay)
+		lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer,
+															T_max=self.hparams.max_epochs,
+															eta_min=self.hparams.end_lr)
+		return [optimizer], [lr_scheduler]
+		
+	def info_nce_loss(self, batch, mode='train'):
+		imgs, _ = batch
+		imgs = torch.cat(imgs, dim=0)
+		
+		h = self.convnet(imgs)
+		
+		feats = self.projection_head(h)
+		cos_sim = F.cosine_similarity(feats[:,None,:], feats[None,:,:], dim=-1)
+		self_mask = torch.eye(cos_sim.shape[0], dtype=torch.bool, device=cos_sim.device)
+		cos_sim.masked_fill_(self_mask, -9e15)
+		pos_mask = self_mask.roll(shifts=cos_sim.shape[0]//2, dims=0)
+
+		# InfoNCE loss
+		cos_sim = cos_sim / self.hparams.temperature
+		nll = -cos_sim[pos_mask] + torch.logsumexp(cos_sim, dim=-1)
+		nll = nll.mean()
+		
+		# Logging loss
+		self.log(mode+'_loss', nll)
+		# Get ranking position of positive example
+		comb_sim = torch.cat([cos_sim[pos_mask][:,None], 
+							  cos_sim.masked_fill(pos_mask, -9e15)], 
+							 dim=-1)
+		sim_argsort = comb_sim.argsort(dim=-1, descending=True).argmin(dim=-1)
+		#Logging ranking metrics
+		self.log(mode+'_acc_top1', (sim_argsort == 0).float().mean(), prog_bar=False, logger=False)
+		self.log(mode+'_acc_top5', (sim_argsort < 5).float().mean())
+		self.log(mode+'_acc_mean_pos', 1+sim_argsort.float().mean())
+		
+		return nll
+		
+	def training_step(self, batch, batch_idx):
+		return self.info_nce_loss(batch, mode='train')
+		
+	def validation_step(self, batch, batch_idx):
+		self.info_nce_loss(batch, mode='val')
+
+
+def main():
+	
+
+	parser = get_parser()
+	args = parser.parse_args()
+
+	if args.config is not None:
+		config_dict = load_yaml_config(args.config)
+		args = merge_config_into_args(args, config_dict, parser)
+
+	train_loader, val_loader = get_simclr_loaders(args.img_size,
+												  args.mean, args.std,
+												  args.root,
+												  args.train_batch,
+												  args.val_batch,
+												  )
+
+	model = SimCLR(args.model_name, True, 6,
+					   hidden_dim=128, start_lr=args.start_lr, 
+					   end_lr=args.end_lr, temperature=0.07, 
+					   weight_decay=1e-4, max_epochs=args.num_epochs)		
+		
+	save_dir = os.path.dirname(args.checkpoint_path)
+	file_name = os.path.splitext(os.path.basename(args.checkpoint_path))[0]
+
+	checkpoint_callback = ModelCheckpoint(
+		dirpath=save_dir,
+		filename=file_name,
+		save_top_k=1,
+		mode='min',  
+		monitor='val_loss',
+		save_weights_only=True
+	)
+	device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+
+	trainer = L.Trainer(
+		default_root_dir=save_dir,
+		accelerator="gpu" if str(device).startswith("cuda") else "cpu",
+		devices=1,
+		max_epochs=args.num_epochs,
+		callbacks=[
+			checkpoint_callback, 
+			LearningRateMonitor('epoch')
+		]
+	)
+	trainer.fit(model, train_loader, val_loader)
+
+if __name__ == "__main__":
+	L.seed_everything(SEED)
+	torch.set_float32_matmul_precision('medium')
+	os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+	load_dotenv()
+	main()
