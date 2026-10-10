@@ -26,9 +26,10 @@ class DDRModel(nn.Module):
 
 			self.model = create_model(
 				model_name, 
-				pretrained=True,
+				pretrained=pretrained,
 				num_classes=num_classes
 			)
+			self.num_features = self.model.num_features
 
 	def forward(self, x):
 		return self.model(x)

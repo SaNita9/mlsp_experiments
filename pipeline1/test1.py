@@ -98,7 +98,7 @@ def main():
 		config_dict = load_yaml_config(args.config)
 		args = merge_config_into_args(args, config_dict, parser)
 
-	run_test(args.test_batch, args.root, args.img_size, args.mean, args.std, args.clip_limit, args.tile_grid_size, 'resnet18', get_resampled_dataloaders)
+	run_test(args.test_batch, args.root, args.img_size, args.mean, args.std, args.clip_limit, args.tile_grid_size, args.model_name, get_resampled_dataloaders)
 	
 if __name__ == "__main__":
 	load_dotenv()

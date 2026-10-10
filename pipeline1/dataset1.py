@@ -43,7 +43,6 @@ class DDR_Dataset(Dataset):
 		if self.transform:
 			img = self.transform(img)
 
-		
 		return img, label
 class ApplyCLAHE:
 	def __init__(self, clip_limit=2.0, tile_grid_size=(8, 8)):
