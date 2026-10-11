@@ -10,8 +10,10 @@ from torchvision.transforms import v2
 from torch.utils.data import Dataset, DataLoader
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 
+
 from arg_utils import get_parser, load_yaml_config, merge_config_into_args
-from DDR_utils import DDR_Dataset, DDRModel
+from dataset_utils import get_simclr_dataset, get_dataloader
+from model_utils import ConvModel
 SEED = 42
 NUM_WORKERS = 4
 
@@ -25,31 +27,32 @@ class ContrastiveTransformations(object):
 		return [self.base_transforms(x) for i in range(self.n_views)]
 
 
-def get_simclr_loaders(img_size, mean, std, img_root_dir, train_batch, val_batch):
-	contrast_transforms = v2.Compose([v2.Resize((img_size, img_size)),
-									v2.RandomHorizontalFlip(),
-									v2.RandomResizedCrop(size=img_size),
-									# v2.Resize((img_size, img_size)),
-									v2.RandomApply([
-										v2.ColorJitter(brightness=0.5, 
-														contrast=0.5, 
-														saturation=0.5, 
-														hue=0.1)
-									], p=0.8),
-									v2.RandomGrayscale(p=0.2),
-									v2.GaussianBlur(kernel_size=9),
-									v2.ToDtype(torch.float32, scale=True),
-									v2.Normalize(mean, std)
-									])
+# def get_simclr_loaders(img_size, mean, std, img_root_dir, train_batch, val_batch):
+# 	contrast_transforms = v2.Compose([v2.Resize((img_size, img_size)),
+# 									v2.RandomHorizontalFlip(),
+# 									v2.RandomResizedCrop(size=img_size),
+# 									# v2.Resize((img_size, img_size)),
+# 									v2.RandomApply([
+# 										v2.ColorJitter(brightness=0.5, 
+# 														contrast=0.5, 
+# 														saturation=0.5, 
+# 														hue=0.1)
+# 									], p=0.8),
+# 									v2.RandomGrayscale(p=0.2),
+# 									v2.GaussianBlur(kernel_size=9),
+# 									v2.ToDtype(torch.float32, scale=True),
+# 									v2.Normalize(mean, std)
+# 									])
+	
+# 	unlabeled_data = DDR_Dataset(img_root_dir, 'train', ContrastiveTransformations(contrast_transforms, n_views=2), labeled=False)
+# 	train_data_contrast = DDR_Dataset(img_root_dir, 'train', ContrastiveTransformations(contrast_transforms, n_views=2), labeled=True)
+	
+# 	train_loader = DataLoader(unlabeled_data, batch_size=train_batch, shuffle=True, 
+# 									drop_last=True, pin_memory=True, num_workers=NUM_WORKERS)
+# 	val_loader = DataLoader(train_data_contrast, batch_size=val_batch, shuffle=False, 
+# 								 drop_last=False, pin_memory=True, num_workers=NUM_WORKERS)
 
-	unlabeled_data = DDR_Dataset(img_root_dir, 'train', ContrastiveTransformations(contrast_transforms, n_views=2), labeled=False)
-	train_data_contrast = DDR_Dataset(img_root_dir, 'train', ContrastiveTransformations(contrast_transforms, n_views=2), labeled=True)
-	train_loader = DataLoader(unlabeled_data, batch_size=train_batch, shuffle=True, 
-									drop_last=True, pin_memory=True, num_workers=NUM_WORKERS)
-	val_loader = DataLoader(train_data_contrast, batch_size=val_batch, shuffle=False, 
-								 drop_last=False, pin_memory=True, num_workers=NUM_WORKERS)
-
-	return train_loader, val_loader
+# 	return train_loader, val_loader
 
 
 
@@ -59,7 +62,7 @@ class SimCLR(L.LightningModule):
 		super().__init__()
 		self.save_hyperparameters()
 		
-		self.convnet = DDRModel(model_name, pretrained=pretrained, num_classes=0)
+		self.convnet = ConvModel(model_name, pretrained=pretrained, num_classes=0)
 	   
 		backbone_out_features = self.convnet.num_features
 		
@@ -126,12 +129,11 @@ def main():
 		config_dict = load_yaml_config(args.config)
 		args = merge_config_into_args(args, config_dict, parser)
 
-	train_loader, val_loader = get_simclr_loaders(args.img_size,
-												  args.mean, args.std,
-												  args.root,
-												  args.train_batch,
-												  args.val_batch,
-												  )
+
+	unlabeled_data = get_simclr_dataset(args.root, args.img_size, args.mean, args.std, args.clip_limit, args.tile_grid_size, labeled = False)
+	train_data_contrast = get_simclr_dataset(args.root, args.img_size, args.mean, args.std, args.clip_limit, args.tile_grid_size, labeled = True)
+	train_loader = get_dataloader(unlabeled_data, args.train_batch, shuffle = False, seed = SEED)
+	val_loader = get_dataloader(train_data_contrast, args.train_batch, shuffle = False, seed = SEED)
 
 	model = SimCLR(args.model_name, True, 6,
 					   hidden_dim=128, start_lr=args.start_lr, 
