@@ -9,9 +9,13 @@ start_lr: 1.0e-4
 end_lr: 1.0e-7
 patience: 5
 delta: 0.001
+eps: 1.0e-6
 print_stats: true
 model_name: "resnet18"
 tile_grid_size: [8, 8]
 clip_limit: 2
 root : "/home/sara/distilaimedical/ddr/DDR-dataset/DR_grading"
 checkpoint_path : "/home/sara/distilaimedical/pipeline1/SimCLRcheckpoint.ckpt"
+output_dir: "/home/sara/distilaimedical/configs/the_logs/"
+pretraining_type: "none"
+imagenet_weights: True

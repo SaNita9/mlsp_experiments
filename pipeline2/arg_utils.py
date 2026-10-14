@@ -26,11 +26,14 @@ def get_parser():
 	parser.add_argument("--checkpoint_path", type=str, default=None)	
 	parser.add_argument("--clip_limit", type=float, default=2.0)
 	parser.add_argument("--tile_grid_size", type=int,  nargs='+', default=[8,8])
-	parser.add_argument("--pretraining_type", type=str, default=None)
+	parser.add_argument("--pretraining_type", type=str, default="SimCLR")
 	parser.add_argument("--imagenet_weights", type=bool, default=True)
 	parser.add_argument("--resample", type=bool, default=False)
 	parser.add_argument("--eps", type=float, default=0.8)
-	
+	parser.add_argument("--embeddings_only", type=bool, default=False)
+	parser.add_argument("--run_name", type=str, default='first_try')
+	parser.add_argument("--version", type=int, default=0)
+	parser.add_argument("--output_dir", type=str, default=None)
 	return parser
 
 def load_yaml_config(path: str | Path) -> Dict[str, Any]:

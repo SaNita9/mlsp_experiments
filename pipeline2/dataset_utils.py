@@ -2,7 +2,7 @@ import time
 import os
 import torch
 import numpy as np
-from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler, TensorDataset
 from PIL import Image
 import torchvision.transforms as transforms
 from reproducibility_utils import seed_worker
@@ -122,6 +122,9 @@ def get_labeled_dataset(root, stage, img_size, mean, std, clip_limit, tile_grid_
 	return dataset
 
 def get_dataloader(dataset, batch_size, shuffle, seed=42):
+	'''
+	Return a dataloader made from a dataset.
+	'''
 	g = torch.Generator()
 	g.manual_seed(seed)
 	loader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, 
@@ -131,12 +134,26 @@ def get_dataloader(dataset, batch_size, shuffle, seed=42):
 
 def get_resampled_dataloader(dataset, batch_size, shuffle, seed=42):
 	"""
-	resample so that batches are label-balanced
+	Resample so that batches are label-balanced
 	"""
 	g = torch.Generator()
 	g.manual_seed(seed)
 	
-	labels_cpu = np.array([label for _, label in dataset.data])
+	if isinstance(dataset, TensorDataset):
+		# Handles your embeddings_only workflow
+		labels_cpu = dataset.tensors[1].cpu().numpy()
+	elif hasattr(dataset, "targets"):
+		# Handles standard torchvision datasets
+		labels_cpu = np.array(dataset.targets)
+	elif hasattr(dataset, "data") and isinstance(dataset.data[0], tuple):
+		# Handles your original list of tuples
+		labels_cpu = np.array([label for _, label in dataset.data])
+	else:
+		# Ultimate fallback (a bit slower, but guaranteed to be perfectly aligned)
+		labels_cpu = np.array([dataset[i][1] for i in range(len(dataset))])
+		
+	# Ensure labels are integers for bincount
+	labels_cpu = labels_cpu.astype(int)
 	class_counts = np.bincount(labels_cpu, minlength=6)
 	class_weights = 1/class_counts
 	sample_weights = [class_weights[i] for i in labels_cpu]
@@ -148,7 +165,9 @@ def get_resampled_dataloader(dataset, batch_size, shuffle, seed=42):
 	return loader
 
 class ContrastiveTransformations(object):
-	
+	'''
+	Return a positive pair 
+	'''
 	def __init__(self, base_transforms, n_views=2):
 		self.base_transforms = base_transforms
 		self.n_views = n_views
@@ -158,12 +177,14 @@ class ContrastiveTransformations(object):
 
 
 def get_simclr_dataset(root, img_size, mean, std, clip_limit, tile_grid_size, labeled = False):
+	'''
+	Get a custom DDR_Dataset instance that has contrast_transforms applied to it.
+	'''
 	contrast_transforms = v2.Compose([
 		ApplyCLAHE(clip_limit=clip_limit, tile_grid_size=tile_grid_size),
 		v2.Resize((img_size, img_size)),
 		v2.RandomHorizontalFlip(),
 		v2.RandomResizedCrop(size=img_size),
-		# v2.Resize((img_size, img_size)),
 		v2.RandomApply([
 			v2.ColorJitter(brightness=0.5, 
 							contrast=0.5, 

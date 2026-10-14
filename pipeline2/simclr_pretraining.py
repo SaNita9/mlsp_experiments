@@ -1,4 +1,3 @@
-
 import lightning as L
 import torch
 import os
@@ -7,13 +6,12 @@ from dotenv import load_dotenv
 import torch.nn as nn
 import torch.optim as optim
 from torchvision.transforms import v2
-from torch.utils.data import Dataset, DataLoader
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
-
-
+from timm import create_model
+from lightning.pytorch.loggers import CSVLogger
 from arg_utils import get_parser, load_yaml_config, merge_config_into_args
 from dataset_utils import get_simclr_dataset, get_dataloader
-from model_utils import ConvModel
+
 SEED = 42
 NUM_WORKERS = 4
 
@@ -27,42 +25,16 @@ class ContrastiveTransformations(object):
 		return [self.base_transforms(x) for i in range(self.n_views)]
 
 
-# def get_simclr_loaders(img_size, mean, std, img_root_dir, train_batch, val_batch):
-# 	contrast_transforms = v2.Compose([v2.Resize((img_size, img_size)),
-# 									v2.RandomHorizontalFlip(),
-# 									v2.RandomResizedCrop(size=img_size),
-# 									# v2.Resize((img_size, img_size)),
-# 									v2.RandomApply([
-# 										v2.ColorJitter(brightness=0.5, 
-# 														contrast=0.5, 
-# 														saturation=0.5, 
-# 														hue=0.1)
-# 									], p=0.8),
-# 									v2.RandomGrayscale(p=0.2),
-# 									v2.GaussianBlur(kernel_size=9),
-# 									v2.ToDtype(torch.float32, scale=True),
-# 									v2.Normalize(mean, std)
-# 									])
-	
-# 	unlabeled_data = DDR_Dataset(img_root_dir, 'train', ContrastiveTransformations(contrast_transforms, n_views=2), labeled=False)
-# 	train_data_contrast = DDR_Dataset(img_root_dir, 'train', ContrastiveTransformations(contrast_transforms, n_views=2), labeled=True)
-	
-# 	train_loader = DataLoader(unlabeled_data, batch_size=train_batch, shuffle=True, 
-# 									drop_last=True, pin_memory=True, num_workers=NUM_WORKERS)
-# 	val_loader = DataLoader(train_data_contrast, batch_size=val_batch, shuffle=False, 
-# 								 drop_last=False, pin_memory=True, num_workers=NUM_WORKERS)
-
-# 	return train_loader, val_loader
-
-
-
 class SimCLR(L.LightningModule):
 	
-	def __init__(self, model_name, pretrained, num_classes, hidden_dim, start_lr, end_lr, temperature, weight_decay, max_epochs=50):
+	def __init__(self, model_name, pretrained, hidden_dim, start_lr, end_lr, temperature, weight_decay, max_epochs=50):
 		super().__init__()
-		self.save_hyperparameters()
-		
-		self.convnet = ConvModel(model_name, pretrained=pretrained, num_classes=0)
+		self.save_hyperparameters(ignore=["model_name", "pretrained"])
+		self.convnet = self.model = create_model(
+                model_name, 
+                pretrained=pretrained,
+                num_classes=0
+        )
 	   
 		backbone_out_features = self.convnet.num_features
 		
@@ -121,7 +93,6 @@ class SimCLR(L.LightningModule):
 
 def main():
 	
-
 	parser = get_parser()
 	args = parser.parse_args()
 
@@ -132,34 +103,34 @@ def main():
 
 	unlabeled_data = get_simclr_dataset(args.root, args.img_size, args.mean, args.std, args.clip_limit, args.tile_grid_size, labeled = False)
 	train_data_contrast = get_simclr_dataset(args.root, args.img_size, args.mean, args.std, args.clip_limit, args.tile_grid_size, labeled = True)
-	train_loader = get_dataloader(unlabeled_data, args.train_batch, shuffle = False, seed = SEED)
+	
+	train_loader = get_dataloader(unlabeled_data, args.train_batch, shuffle = True, seed = SEED)
 	val_loader = get_dataloader(train_data_contrast, args.train_batch, shuffle = False, seed = SEED)
 
-	model = SimCLR(args.model_name, True, 6,
+	model = SimCLR(args.model_name, True,
 					   hidden_dim=128, start_lr=args.start_lr, 
 					   end_lr=args.end_lr, temperature=0.07, 
 					   weight_decay=1e-4, max_epochs=args.num_epochs)		
 		
-	save_dir = os.path.dirname(args.checkpoint_path)
-	file_name = os.path.splitext(os.path.basename(args.checkpoint_path))[0]
-
-	checkpoint_callback = ModelCheckpoint(
-		dirpath=save_dir,
-		filename=file_name,
-		save_top_k=1,
-		mode='min',  
-		monitor='val_loss',
-		save_weights_only=True
-	)
+	checkpoint_cb = ModelCheckpoint(
+			filename="best_simclr",                    # always best.ckpt
+			save_weights_only=True,
+			save_top_k=1,
+			mode="min",
+			monitor="val_loss",
+			enable_version_counter=False,       # overwrite instead of best-v1.ckpt
+		)
+		
+	logger = CSVLogger(args.output_dir, name=args.run_name, version=args.version)
+		
 	device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 
-	trainer = L.Trainer(
-		default_root_dir=save_dir,
+	trainer = L.Trainer(logger=logger,
 		accelerator="gpu" if str(device).startswith("cuda") else "cpu",
 		devices=1,
 		max_epochs=args.num_epochs,
 		callbacks=[
-			checkpoint_callback, 
+			checkpoint_cb, 
 			LearningRateMonitor('epoch')
 		]
 	)
