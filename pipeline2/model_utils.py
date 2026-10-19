@@ -223,6 +223,10 @@ class Classifier(L.LightningModule):
         self.test_kappa.reset()
         self.test_qwk.reset()
 
+    def predict_step(self, batch, batch_idx):
+        x, y = batch
+        return self.backbone(x), y
+
 
 
 

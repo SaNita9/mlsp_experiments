@@ -16,9 +16,67 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 import pandas as pd
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint, EarlyStopping
+import numpy as np, torch
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+import matplotlib.pyplot as plt
+
 SEED=42
 NUM_WORKERS = 4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+def tsne_plots(feats, labels, preds):
+    emb    = torch.cat(feats).numpy()
+    labels = torch.cat(labels).numpy()
+    preds  = torch.cat(preds).numpy()
+
+    rng = np.random.default_rng(SEED)
+    idx = rng.choice(len(emb), size=min(3000, len(emb)), replace=False)
+
+    emb50 = PCA(n_components=50, random_state=0).fit_transform(emb[idx])
+    xy = TSNE(n_components=2, perplexity=30, init="pca", random_state=SEED).fit_transform(emb50)
+
+    fig, ax = plt.subplots(1, 2, figsize=(14, 6))
+    for a, c, title in [(ax[0], labels[idx], "true label"), (ax[1], preds[idx], "predicted")]:
+        sc = a.scatter(xy[:, 0], xy[:, 1], c=c, s=6, cmap="tab10", vmin=0, vmax=9)
+        a.set_title(title); a.set_xticks([]); a.set_yticks([])
+    plt.colorbar(sc, ax=ax, ticks=range(6))
+    plt.show()
+
+
+def plot_loss_acc(log_dir):
+    metrics_path = os.path.join(log_dir, "metrics.csv")
+    
+    if not os.path.exists(metrics_path):
+        print(f"No metrics found at {metrics_path}")
+        return
+        
+    metrics = pd.read_csv(metrics_path)
+    print(metrics.columns.tolist())
+        
+    metrics_by_epoch = metrics.groupby("epoch").mean().reset_index()
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    axes[0].plot(metrics_by_epoch["epoch"], metrics_by_epoch["train_loss_epoch"], label="Train Loss", marker="o")
+    axes[0].plot(metrics_by_epoch["epoch"], metrics_by_epoch["val_loss"], label="Val Loss", marker="o")
+    axes[0].set_title("Training and Validation Loss")
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("Loss")
+    axes[0].legend()
+    axes[0].grid(True)
+
+    axes[1].plot(metrics_by_epoch["epoch"], metrics_by_epoch["train_acc_epoch"], label="Train Accuracy", marker="o")
+    axes[1].plot(metrics_by_epoch["epoch"], metrics_by_epoch["val_acc"], label="Val Accuracy", marker="o")
+    axes[1].set_title("Training and Validation Accuracy")
+    axes[1].set_xlabel("Epoch")
+    axes[1].set_ylabel("Accuracy")
+    axes[1].legend()
+    axes[1].grid(True)
+
+    plt.tight_layout()
+    plt.show()
+
 
 def prepare_features_logistic_reg(network, dataset, batch_size, seed):
     network.eval()
@@ -38,35 +96,83 @@ def prepare_features_logistic_reg(network, dataset, batch_size, seed):
     return TensorDataset(feats, labels)
 
 
-def load_simclr_backbone(checkpoint_path, model_name):
-    """Rebuild the timm backbone and load only its weights from a SimCLR checkpoint."""
+# def load_simclr_backbone(checkpoint_path, model_name):
+#     """Rebuild the timm backbone and load only its weights from a SimCLR checkpoint."""
+#     ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+#     state_dict = ckpt["state_dict"]
+
+#     # Find the backbone's first conv, ignoring the projection head
+#     suffix = "conv1.weight"
+#     candidates = [k for k in state_dict
+#                   if k.endswith(suffix) and "projection" not in k]
+#     if not candidates:
+#         raise KeyError(f"No '{suffix}' key found. Example keys: {list(state_dict)[:10]}")
+
+#     # Shortest match is the top-level conv1, e.g. "convnet.model." (not "layer1.0.conv1.weight")
+#     prefix = min(candidates, key=len)[:-len(suffix)]
+#     print(f"Using backbone prefix: '{prefix}'")
+
+#     backbone_state = {k[len(prefix):]: v for k, v in state_dict.items() if k.startswith(prefix)}
+
+#     backbone = create_model(model_name, pretrained=False, num_classes=0)
+#     backbone.load_state_dict(backbone_state, strict=True)
+#     return backbone
+
+def load_simclr_v2_backbone(checkpoint_path, model_name, keep_head_layer=True):
+    """
+    Rebuild the timm backbone and optionally attach the first layer of the projection head,
+    which is a standard SimCLR v2 practice for fine-tuning.
+    """
     ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    state_dict = ckpt["state_dict"]
+    state_dict = ckpt.get("state_dict", ckpt)
 
-    # Find the backbone's first conv, ignoring the projection head
     suffix = "conv1.weight"
-    candidates = [k for k in state_dict
-                  if k.endswith(suffix) and "projection" not in k]
+    candidates = [k for k in state_dict if k.endswith(suffix) and "projection" not in k]
     if not candidates:
-        raise KeyError(f"No '{suffix}' key found. Example keys: {list(state_dict)[:10]}")
+        raise KeyError(f"No '{suffix}' key found.")
 
-    # Shortest match is the top-level conv1, e.g. "convnet.model." (not "layer1.0.conv1.weight")
     prefix = min(candidates, key=len)[:-len(suffix)]
-    print(f"Using backbone prefix: '{prefix}'")
-
-    backbone_state = {k[len(prefix):]: v for k, v in state_dict.items() if k.startswith(prefix)}
+    backbone_state = {k[len(prefix):]: v for k, v in state_dict.items() if k.startswith(prefix) and "projection" not in k}
 
     backbone = create_model(model_name, pretrained=False, num_classes=0)
     backbone.load_state_dict(backbone_state, strict=True)
-    return backbone
+    
+    if not keep_head_layer:
+        return backbone
+        
+    head_state = {k: v for k, v in state_dict.items() if "projection_head.0" in k or "projection_head.1" in k}
+    
+    first_layer = nn.Sequential(
+        nn.Linear(backbone.num_features, backbone.num_features, bias=False), 
+        nn.BatchNorm1d(backbone.num_features),
+        nn.ReLU(inplace=True)
+    )
+
+    cleaned_head_state = {}
+    for k, v in head_state.items():
+        if "projection_head.0" in k:
+            cleaned_head_state[k.split("projection_head.0.")[-1]] = v
+        elif "projection_head.1" in k:
+            cleaned_head_state["1." + k.split("projection_head.1.")[-1]] = v
+            
+    first_layer[0].load_state_dict({k: v for k, v in cleaned_head_state.items() if not k.startswith("1.")})
+    first_layer[1].load_state_dict({k.replace("1.", ""): v for k, v in cleaned_head_state.items() if k.startswith("1.")})
+
+    combined_model = nn.Sequential(
+        backbone,
+        first_layer
+    )
+    return combined_model
 
 def main():
     parser = get_parser()
-    args = parser.parse_args()
+    
+    args, _ = parser.parse_known_args()
 
     if args.config is not None:
         config_dict = load_yaml_config(args.config)
-        args = merge_config_into_args(args, config_dict, parser)
+        parser.set_defaults(**config_dict)
+    args = parser.parse_args()
 
     """
         nimic + conv + nimic
@@ -93,19 +199,22 @@ def main():
 
     # save_dir = os.path.dirname(args.checkpoint_path)
     # file_name = os.path.splitext(os.path.basename(args.checkpoint_path))[0]
-
+    cb_file_name = "best_" + str(args.pretraining_type) 
+    if args.pretraining_type == 'SimCLR':
+        cb_file_name += str(args.embeddings_only)
     checkpoint_cb = ModelCheckpoint(
-        filename="best",                    # always best.ckpt
+        filename=cb_file_name,
+        dirpath=args.output_dir,
         save_weights_only=True,
         save_top_k=1,
         mode="min",
         monitor="val_loss",
-        enable_version_counter=False,       # overwrite instead of best-v1.ckpt
+        enable_version_counter=False,
     )
 
     early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=10, verbose=False, mode="min")
     
-    logger = CSVLogger(args.output_dir, name=args.run_name, version=args.version)
+    logger = CSVLogger(args.output_dir, name="", version="")
     
     trainer = L.Trainer(logger=logger,
                         accelerator="gpu" if str(device).startswith("cuda") else "cpu",
@@ -120,7 +229,6 @@ def main():
     train_data = get_labeled_dataset(args.root, "train", args.img_size, args.mean, args.std, args.clip_limit, args.tile_grid_size)
     val_data = get_labeled_dataset(args.root, "valid", args.img_size, args.mean, args.std, args.clip_limit, args.tile_grid_size)
     test_data = get_labeled_dataset(args.root, "test", args.img_size, args.mean, args.std, args.clip_limit, args.tile_grid_size)
-
     
     match args.pretraining_type:
         case "none": #VANILLA RESNET
@@ -136,18 +244,17 @@ def main():
         case "SimCLR":
             # simclr_model = backbone and projection head
             # simclr_model = SimCLR.load_from_checkpoint(args.checkpoint_path)
-            backbone = load_simclr_backbone(args.checkpoint_path, args.model_name)
+            backbone = load_simclr_v2_backbone(args.checkpoint_path, args.model_name, keep_head_layer = False)
             
             # backbone = deepcopy(simclr_model.convnet)
             # backbone.fc = nn.Identity()
 
             
-            if args.embeddings_only:
+            if args.embeddings_only == 'True':
                 train_data = prepare_features_logistic_reg(backbone, dataset = train_data, batch_size = args.train_batch, seed = SEED)
                 val_data = prepare_features_logistic_reg(backbone, dataset =val_data, batch_size = args.val_batch, seed = SEED)
                 test_data = prepare_features_logistic_reg(backbone, dataset =test_data, batch_size = args.test_batch, seed = SEED)
                 backbone.cpu()
-                # base_network = nn.Linear(feature_dim=train_data.tensors[0].shape[1], num_classes=6)
                 base_network = nn.Identity()
                 feature_dim = train_data.tensors[0].shape[1]
                 resampled = False
@@ -182,53 +289,39 @@ def main():
                     start_lr = args.start_lr,
                     end_lr = args.end_lr,
                     eps = args.eps,
-                    warmup_epochs=10, 
+                    warmup_epochs=0, 
                      backbone_lr_mult=backbone_lr_mult, freeze_backbone=freeze_backbone,
                      max_epochs=args.num_epochs, label_smoothing=0.0
                     )
 
     trainer.fit(model, train_loader, val_loader)
-    # 1. Construct the path to the metrics.csv generated by CSVLogger
-# Replace these variables with your actual strings if not running in the same script
+
+    # print(model)                                   
+    # for name, p in model.named_parameters():       
+    #     print(name, p.shape)
+    # for name, m in model.named_modules():          
+    #     print(name, type(m).__name__)
+
+    model.eval().to(device)
+
+    feats, labels, preds = [], [], []
+    with torch.no_grad():
+        for x, y in val_loader:                     # shuffle=False, order is stable
+            h = model.backbone(x.to(device))        # (B, 512)
+            feats.append(h.cpu())
+            preds.append(model.head(h).argmax(1).cpu())
+            labels.append(y)
+
+    tsne_plots(feats, labels, preds)
     
-   
-    metrics_path = "/home/sara/distilaimedical/configs/the_logs/first_try/version_0/metrics.csv"
-    # # 2. Read the CSV file
-    # metrics_path = os.path.join("/home/sara/distilaimedical/", args.output_dir, args.run_name, "metrics.csv")
-    metrics = pd.read_csv(metrics_path)
-    print(metrics.columns.tolist())
-        
-    
-        
 
-    # 3. Align train and val metrics
-    # PyTorch Lightning often logs train and val metrics on different steps/rows.
-    # Grouping by epoch and taking the mean aligns them cleanly for plotting.
-    metrics_by_epoch = metrics.groupby("epoch").mean().reset_index()
+    plot_loss_acc(trainer.logger.log_dir)
 
-    # 4. Plot Loss and Accuracy
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    preds = trainer.predict(model, dataloaders=val_loader)
+    emb = torch.cat([p[0] for p in preds])
 
-    axes[0].plot(metrics_by_epoch["epoch"], metrics_by_epoch["train_loss_epoch"], label="Train Loss", marker="o")
-    axes[0].plot(metrics_by_epoch["epoch"], metrics_by_epoch["val_loss"], label="Val Loss", marker="o")
-    axes[0].set_title("Training and Validation Loss")
-    axes[0].set_xlabel("Epoch")
-    axes[0].set_ylabel("Loss")
-    axes[0].legend()
-    axes[0].grid(True)
-
-    # --- Plot Accuracy ---
-    axes[1].plot(metrics_by_epoch["epoch"], metrics_by_epoch["train_acc_epoch"], label="Train Accuracy", marker="o")
-    axes[1].plot(metrics_by_epoch["epoch"], metrics_by_epoch["val_acc"], label="Val Accuracy", marker="o")
-    axes[1].set_title("Training and Validation Accuracy")
-    axes[1].set_xlabel("Epoch")
-    axes[1].set_ylabel("Accuracy")
-    axes[1].legend()
-    axes[1].grid(True)
-
-    plt.tight_layout()
-    plt.show()
-    trainer.test(model, test_loader, ckpt_path="best")  
+    full_ckpt_path = os.path.join(trainer.logger.log_dir, cb_file_name + ".ckpt")
+    trainer.test(model, test_loader, ckpt_path=full_ckpt_path)  
     print(trainer.checkpoint_callback.best_model_path)
 
 if __name__ == "__main__":
