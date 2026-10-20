@@ -1,0 +1,11 @@
+=== Test Metrics ===
+Class 0 Accuracy: 0.2676 (26.76%)
+Class 1 Accuracy: 0.5661 (56.61%)
+Class 2 Accuracy: 0.0685 (6.85%)
+Class 3 Accuracy: 0.3521 (35.21%)
+Class 4 Accuracy: 0.3964 (39.64%)
+Class 5 Accuracy: 0.7457 (74.57%)
+
+Overall F1 Score:   0.2665
+Overall Kappa Score:   0.1385
+Quadratic Weighted Kappa Score:   0.7053

@@ -18,13 +18,19 @@ class Classifier(L.LightningModule):
                  betas, start_lr, end_lr, 
                  eps, warmup_epochs=2, 
                  backbone_lr_mult=1.0, freeze_backbone=False,
-                 max_epochs=50, label_smoothing=0.0):
+                 max_epochs=50, label_smoothing=0.0,
+                 output_dir="."): # Added output_dir here
         
         super().__init__()
         self.save_hyperparameters(ignore=["base_network"])
         feature_dim = feature_dim or getattr(base_network, "num_features", None)
         self.backbone = base_network
         self.head = nn.Linear(feature_dim, num_classes)
+        self.output_dir = output_dir
+        
+        os.makedirs(self.output_dir, exist_ok=True)
+        self.metrics_file_path = os.path.join(self.output_dir, "test_metrics_output.txt")
+        self.val_log_file_path = os.path.join(self.output_dir, "validation_log.txt")
 
         self.test_per_class_acc = torchmetrics.Accuracy(
             task="multiclass", 
@@ -36,8 +42,6 @@ class Classifier(L.LightningModule):
         self.val_acc = torchmetrics.Accuracy("multiclass", num_classes=num_classes)
         self.test_acc = torchmetrics.Accuracy("multiclass", num_classes=num_classes)
 
-        
-        
         self.test_conf_matrix = torchmetrics.ConfusionMatrix(
             task="multiclass", num_classes=num_classes
         )
@@ -61,14 +65,10 @@ class Classifier(L.LightningModule):
             for p in self.backbone.parameters():
                 p.requires_grad = False
 
-
     def forward(self, x):
         return self.head(self.backbone(x))
 
     def train(self, mode=True):
-        # Override so a frozen backbone stays in eval mode,
-        # otherwise BatchNorm running stats keep updating even with
-        # requires_grad=False.
         super().train(mode)
         if self.hparams.freeze_backbone:
             self.backbone.eval()
@@ -76,10 +76,9 @@ class Classifier(L.LightningModule):
 
     @staticmethod
     def _split_params(module):
-        """Return (weights, others) for the trainable params of a module."""
         weights, others = [], []
         for param in module.parameters():
-            if not param.requires_grad:   # skip frozen params
+            if not param.requires_grad:   
                 continue
             if param.ndim > 1:
                 weights.append(param)
@@ -93,8 +92,6 @@ class Classifier(L.LightningModule):
         backbone_lr = hp.start_lr * hp.backbone_lr_mult
         head_lr = hp.start_lr
 
-        #   weights (2-D+ tensors: conv kernels, linear matrices) -> get weight decay
-        #   others  (1-D tensors: biases, BatchNorm scale/shift)   -> no weight decay
         backbone_weights, backbone_others = self._split_params(self.backbone)
         head_weights, head_others = self._split_params(self.head)
 
@@ -167,10 +164,16 @@ class Classifier(L.LightningModule):
         
         epoch = self.current_epoch
         
+        with open(self.val_log_file_path, "a") as f:
+            if epoch == 0:
+                f.write(f"\n{'Epoch':^7} | {'Train Loss':^12} | {'Train Acc':^11} | {'Val Loss':^10} | {'Val Acc':^9}\n")
+                f.write("-" * 61 + "\n")
+                
+            f.write(f"{epoch:^7} | {t_loss:^12.4f} | {t_acc:^11.4f} | {v_loss:^10.4f} | {v_acc:^9.4f}\n")
+
         if epoch == 0:
             print(f"\n{'Epoch':^7} | {'Train Loss':^12} | {'Train Acc':^11} | {'Val Loss':^10} | {'Val Acc':^9}")
             print("-" * 61)
-            
         print(f"{epoch:^7} | {t_loss:^12.4f} | {t_acc:^11.4f} | {v_loss:^10.4f} | {v_acc:^9.4f}")
 
         avg_val_loss = self.trainer.callback_metrics.get('val_loss')
@@ -190,17 +193,20 @@ class Classifier(L.LightningModule):
 
     def on_test_epoch_end(self):
         per_class_accuracies = self.test_per_class_acc.compute()
-        
-        for class_idx, acc in enumerate(per_class_accuracies):
-            print(f"Class {class_idx} Accuracy: {acc.item():.4f} ({acc.item() * 100:.2f}%)")
-            # self.log(f"test_acc_class_{class_idx}", acc, prog_bar=True)
         f1_score = self.test_f1.compute()
-        print(f"Overall F1 Score:   {f1_score.item():.4f}\n")
         kappa = self.test_kappa.compute()
-        print(f"Overall kappa Score:   {kappa.item():.4f}\n")
-
         qwk = self.test_qwk.compute()
-        print(f"Quadratic weighted kappa Score:   {qwk.item():.4f}\n")
+
+        with open(self.metrics_file_path, "w") as f:
+            f.write("=== Test Metrics ===\n")
+            for class_idx, acc in enumerate(per_class_accuracies):
+                f.write(f"Class {class_idx} Accuracy: {acc.item():.4f} ({acc.item() * 100:.2f}%)\n")
+            
+            f.write(f"\nOverall F1 Score:   {f1_score.item():.4f}\n")
+            f.write(f"Overall Kappa Score:   {kappa.item():.4f}\n")
+            f.write(f"Quadratic Weighted Kappa Score:   {qwk.item():.4f}\n")
+
+        print(f"Test metrics saved to {self.metrics_file_path}")
 
         conf_matrix = self.test_conf_matrix.compute().cpu().numpy()
 
@@ -208,15 +214,13 @@ class Classifier(L.LightningModule):
         disp.plot(cmap='Blues', values_format='d')
         plt.title("Test Confusion Matrix")
         
-        
-        # plt.tight_layout()
-        # plt.savefig("confusion_matrix.png", dpi=300)
-        
-        plt.show() 
+        plt.tight_layout()
+        cm_path = os.path.join(self.output_dir, "confusion_matrix.png")
+        plt.savefig(cm_path, dpi=300)
+        print(f"Confusion matrix saved to {cm_path}")
         
         plt.close()
         
-        # Reset metrics
         self.test_per_class_acc.reset()
         self.test_conf_matrix.reset()
         self.test_f1.reset()
@@ -226,100 +230,3 @@ class Classifier(L.LightningModule):
     def predict_step(self, batch, batch_idx):
         x, y = batch
         return self.backbone(x), y
-
-
-
-
-# class ConvModel(L.LightningModule):
-#     def __init__(self, model_name: str = "resnet18", pretrained: bool = True, num_classes: int = 6):
-#             super().__init__()
-#             self.save_hyperparameters()
-
-#             self.model = create_model(
-#                 model_name, 
-#                 pretrained=pretrained,
-#                 num_classes=num_classes
-#             )
-#             self.num_features = self.model.num_features
-
-#     def forward(self, x):
-#         return self.model(x)
-
-
-# class LogisticRegression(L.LightningModule):
-    
-#     def __init__(self, feature_dim, num_classes, lr, weight_decay, max_epochs=100):
-#         super().__init__()
-#         self.save_hyperparameters()
-
-#         self.model = nn.Linear(feature_dim, num_classes)
-
-#     def configure_optimizers(self):
-#         optimizer = optim.AdamW(self.parameters(), 
-#                                 lr=self.hparams.lr, 
-#                                 weight_decay=self.hparams.weight_decay)
-#         lr_scheduler = optim.lr_scheduler.MultiStepLR(optimizer, 
-#                                                       milestones=[int(self.hparams.max_epochs*0.6), 
-#                                                                   int(self.hparams.max_epochs*0.8)], 
-#                                                       gamma=0.1)
-#         return [optimizer], [lr_scheduler]
-        
-#     def _calculate_loss(self, batch, mode='train'):
-#         feats, labels = batch
-#         preds = self.model(feats)
-#         loss = F.cross_entropy(preds, labels, label_smoothing=self.hparams.label_smoothing)
-#         acc = (preds.argmax(dim=-1) == labels).float().mean()
-
-#         self.log(mode + '_loss', loss)
-#         self.log(mode + '_acc', acc)
-#         return loss        
-        
-#     def training_step(self, batch, batch_idx):
-#         return self._calculate_loss(batch, mode='train')
-        
-#     def validation_step(self, batch, batch_idx):
-#         self._calculate_loss(batch, mode='val')
-        
-#     def test_step(self, batch, batch_idx):
-#         self._calculate_loss(batch, mode='test')
-
-# class Pretrained_Model(L.LightningModule):
-#     def __init__(self, backbone, feature_dim, num_classes, lr, weight_decay, max_epochs=100):
-#         super().__init__()
-#         self.save_hyperparameters()
-
-        
-#         self.model = nn.Sequential(
-#             backbone,
-#             nn.Linear(feature_dim, num_classes)
-#             )
-
-#     def configure_optimizers(self):
-#         optimizer = optim.AdamW(self.parameters(), 
-#                                 lr=self.hparams.lr, 
-#                                 weight_decay=self.hparams.weight_decay)
-#         lr_scheduler = optim.lr_scheduler.MultiStepLR(optimizer, 
-#                                                       milestones=[int(self.hparams.max_epochs*0.6), 
-#                                                                   int(self.hparams.max_epochs*0.8)], 
-#                                                       gamma=0.1)
-#         return [optimizer], [lr_scheduler]
-        
-#     def _calculate_loss(self, batch, mode='train'):
-#         feats, labels = batch
-#         preds = self.model(feats)
-#         loss = F.cross_entropy(preds, labels)
-#         acc = (preds.argmax(dim=-1) == labels).float().mean()
-
-#         self.log(mode + '_loss', loss)
-#         self.log(mode + '_acc', acc)
-#         return loss        
-        
-#     def training_step(self, batch, batch_idx):
-#         return self._calculate_loss(batch, mode='train')
-        
-#     def validation_step(self, batch, batch_idx):
-#         self._calculate_loss(batch, mode='val')
-        
-#     def test_step(self, batch, batch_idx):
-#         self._calculate_loss(batch, mode='test')
-

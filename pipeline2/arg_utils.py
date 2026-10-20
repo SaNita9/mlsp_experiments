@@ -16,8 +16,8 @@ def get_parser():
 	parser.add_argument("--std", type=float, nargs='+', default=[0.2945, 0.2047, 0.1401])
 	parser.add_argument("--num_epochs", type=int, default=5)
 	parser.add_argument("--train_batch", type=int, default=64)
-	parser.add_argument("--test_batch", type=int, default=128)
 	parser.add_argument("--val_batch", type=int, default=128)
+	parser.add_argument("--test_batch", type=int, default=128)
 	parser.add_argument("--start_lr", type=float, default=1e-4)
 	parser.add_argument("--end_lr", type=float, default=1e-7)
 	parser.add_argument("--print_stats", action=argparse.BooleanOptionalAction, default=True)
@@ -31,9 +31,8 @@ def get_parser():
 	parser.add_argument("--resample", action=argparse.BooleanOptionalAction, default=True)
 	parser.add_argument("--eps", type=float, default=0.8)
 	parser.add_argument("--embeddings_only", action=argparse.BooleanOptionalAction, default=True)
-	parser.add_argument("--run_name", type=str, default='first_try')
-	parser.add_argument("--version", type=int, default=0)
 	parser.add_argument("--output_dir", type=str, default=None)
+	parser.add_argument("--results_folder", type=str, default="None")
 	return parser
 
 def load_yaml_config(path: str | Path) -> Dict[str, Any]:

@@ -176,7 +176,7 @@ class ContrastiveTransformations(object):
 		return [self.base_transforms(x) for i in range(self.n_views)]
 
 
-def get_simclr_dataset(root, img_size, mean, std, clip_limit, tile_grid_size, labeled = False):
+def get_simclr_dataset(root,mode, img_size,  mean, std, clip_limit, tile_grid_size, labeled = False):
 	'''
 	Get a custom DDR_Dataset instance that has contrast_transforms applied to it.
 	'''
@@ -197,5 +197,5 @@ def get_simclr_dataset(root, img_size, mean, std, clip_limit, tile_grid_size, la
 		v2.Normalize(mean, std)
 		])
 	
-	dataset = DDR_Dataset(root, 'train', ContrastiveTransformations(contrast_transforms, n_views=2), labeled=labeled)
+	dataset = DDR_Dataset(root, mode, ContrastiveTransformations(contrast_transforms, n_views=2), labeled=labeled)
 	return dataset
